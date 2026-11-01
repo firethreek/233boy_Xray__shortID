@@ -89,7 +89,10 @@ is_conf_dir=$is_core_dir/conf
 is_log_dir=/var/log/$is_core
 is_sh_bin=/usr/local/bin/$is_core
 is_sh_dir=$is_core_dir/sh
-is_sh_repo=$author/$is_core
+
+# 【修改处】将脚本仓库指向你自己的分支，确保更新时拉取带有 shortId 的代码
+is_sh_repo="firethreek/233boy_Xray__shortID"
+
 is_pkg="wget unzip jq qrencode"
 is_config_json=$is_core_dir/config.json
 is_caddy_bin=/usr/local/bin/caddy
