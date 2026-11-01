@@ -7,6 +7,21 @@ is_log_level_list=(
     del
 )
 log_set() {
+    # 拦截处理 argo 日志请求 (例如: xray log argo 8080)
+    if [[ $1 == 'argo' || $2 == 'argo' ]]; then
+        local target_port=$3
+        [[ $1 == 'argo' ]] && target_port=$2
+        [[ ! $target_port ]] && target_port=$port
+        
+        if [[ $target_port ]]; then
+            msg "\n 提醒: 按 $(_green Ctrl + C) 退出\n"
+            journalctl -u argo-$target_port -f
+        else
+            err "缺少端口参数。请使用: $is_core log argo [端口号]"
+        fi
+        return
+    fi
+
     if [[ $2 ]]; then
         for v in ${is_log_level_list[@]}; do
             [[ $(grep -E -i "^${2,,}$" <<<$v) ]] && is_log_level_use=$v && break

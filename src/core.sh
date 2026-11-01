@@ -12,6 +12,7 @@ protocol_list=(
     VLESS-gRPC-TLS
     VLESS-XHTTP-TLS
     VLESS-REALITY
+    VLESS-Argo
     # Trojan-H2-TLS
     Trojan-WS-TLS
     Trojan-gRPC-TLS
@@ -105,6 +106,7 @@ change_list=(
     "更改伪装网站"
     "更改 mKCP seed"
     "更改用户名 (Username)"
+    "刷新 Argo 域名"
 )
 servername_list=(
     www.amazon.com
@@ -491,6 +493,9 @@ change() {
         seed | kcpseed | kcp-seed | kcp_seed)
             is_change_id=14
             ;;
+        argo | refresh-argo)
+            is_change_id=16
+            ;;
         *)
             [[ $is_try_change ]] && return
             err "无法识别 ($2) 更改类型."
@@ -741,6 +746,19 @@ change() {
         ask string is_socks_user "请输入新用户名 (Username):"
         add $net
         ;;
+    16)
+        # refresh argo
+        [[ $host != *.trycloudflare.com ]] && err "($is_config_file) 不是 Argo 节点，不支持刷新域名。"
+        msg "\n-> 正在刷新 Argo 隧道 (本地端口: $port)..."
+        systemctl restart argo-$port
+        msg "-> 等待获取新的临时域名 (约需 10 秒)..."
+        sleep 10
+        is_new_host=$(journalctl -u argo-$port -n 50 --no-pager | grep -oE "https://[a-zA-Z0-9.-]+\.trycloudflare\.com" | tail -n 1 | sed 's/https:\/\///')
+        [[ -z $is_new_host ]] && err "刷新 Argo 临时域名失败，请检查 argo-$port 进程。"
+        old_host=$host
+        add $net $is_new_host
+        msg "\n已自动更新节点配置，新 Argo 域名为: $(_green $is_new_host) \n"
+        ;;
     esac
 }
 
@@ -756,6 +774,15 @@ del() {
             msg "\n是否删除配置文件?: $is_config_file"
             pause
         fi
+        
+        # 删除相关的 Argo 隧道后台服务
+        if [[ -f /lib/systemd/system/argo-$port.service ]]; then
+            systemctl stop argo-$port &>/dev/null
+            systemctl disable argo-$port &>/dev/null
+            rm -f /lib/systemd/system/argo-$port.service
+            systemctl daemon-reload
+        fi
+
         api del $is_conf_dir/"$is_config_file" $is_dynamic_port_file &>/dev/null
         rm -rf $is_conf_dir/"$is_config_file" $is_dynamic_port_file
         [[ $is_api_fail && ! $is_new_json ]] && manage restart &
@@ -792,6 +819,12 @@ uninstall() {
     manage stop &>/dev/null
     manage disable &>/dev/null
     rm -rf $is_core_dir $is_log_dir $is_sh_bin /lib/systemd/system/$is_core.service /etc/init.d/$is_core
+    
+    # 清理可能残留的 Argo 隧道进程
+    rm -f /lib/systemd/system/argo-*.service
+    systemctl daemon-reload
+    pkill -f "cloudflared tunnel"
+    
     sed -i "/$is_core/d" /root/.bashrc
     # uninstall caddy; 2 is ask result
     if [[ $REPLY == '2' ]]; then
@@ -916,6 +949,9 @@ add() {
         xhttp)
             is_new_protocol=VLESS-XHTTP-TLS
             ;;
+        argo | vless-argo)
+            is_new_protocol=VLESS-Argo
+            ;;
         r | reality)
             is_new_protocol=VLESS-REALITY
             ;;
@@ -975,6 +1011,10 @@ add() {
         is_use_uuid=$3
         is_use_servername=$4
         is_add_opts="[port] [uuid] [sni]"
+        ;;
+    *argo*)
+        is_use_port=$2
+        is_add_opts="[port]"
         ;;
     hysteria*)
         is_use_port=$2
@@ -1116,6 +1156,75 @@ add() {
         [[ $is_use_socks_pass ]] && is_socks_pass=$is_use_socks_pass
     fi
 
+    # Dokodemo-Door
+    if [[ $is_new_protocol == 'Dokodemo-Door' ]]; then
+        # set remote addr
+        [[ ! $door_addr ]] && ask string door_addr "请输入目标地址:"
+        # set remote port
+        [[ ! $door_port ]] && ask string door_port "请输入目标端口:"
+    fi
+
+    # VLESS-Argo
+    if [[ $is_new_protocol == 'VLESS-Argo' ]]; then
+        [[ ! $port ]] && get_port && port=$tmp_port
+        msg "\n-> 正在配置 Argo 隧道守护进程 (本地监听端口: $port)..."
+        
+        if [[ ! -f /usr/local/bin/cloudflared ]]; then
+            msg "-> 首次使用，正在为您下载官方 cloudflared..."
+            local cf_arch="amd64"
+            [[ $(uname -m) == *aarch64* || $(uname -m) == *armv8* ]] && cf_arch="arm64"
+            _wget -q -O /usr/local/bin/cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${cf_arch}
+            chmod +x /usr/local/bin/cloudflared
+        fi
+        
+        cat <<EOF >/lib/systemd/system/argo-$port.service
+[Unit]
+Description=Argo Tunnel for port $port
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/cloudflared tunnel --edge-ip-version auto --protocol http2 --url http://localhost:$port
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+        systemctl daemon-reload
+        systemctl enable argo-$port &>/dev/null
+        systemctl restart argo-$port
+
+        msg "-> 等待分配 TryCloudflare 临时域名 (约需 10 秒)..."
+        sleep 10
+        host=$(journalctl -u argo-$port -n 50 --no-pager | grep -oE "https://[a-zA-Z0-9.-]+\.trycloudflare\.com" | tail -n 1 | sed 's/https:\/\///')
+        [[ -z $host ]] && err "获取 Argo 临时域名失败，请重试或检查 systemctl status argo-$port。"
+        msg "-> 成功分配穿透域名: $(_green $host)"
+        
+        is_no_auto_tls=1
+        is_use_tls=1
+        is_install_caddy=
+    fi
+
+    # Shadowsocks 2022
+    if [[ $(grep 2022 <<<$ss_method) ]]; then
+        # test ss2022 password
+        [[ $ss_password ]] && {
+            is_test_json=1
+            # create server Shadowsocks | $is_core_bin -test &>/dev/null
+            create server Shadowsocks
+            $is_core_bin -test <<<"$is_new_json" &>/dev/null
+            if [[ $? != 0 ]]; then
+                warn "Shadowsocks 协议 ($ss_method) 不支持使用密码 ($(_red_bg $ss_password))\n\n你可以使用命令: $(_green $is_core ss2022) 生成支持的密码.\n\n脚本将自动创建可用密码:)"
+                ss_password=
+                # create new json.
+                json_str=
+            fi
+            is_test_json=
+        }
+
+    fi
+
     if [[ $is_use_tls ]]; then
         if [[ ! $is_no_auto_tls && ! $is_caddy && ! $is_gen ]]; then
             # test auto tls
@@ -1169,33 +1278,6 @@ add() {
         fi
     fi
 
-    # Dokodemo-Door
-    if [[ $is_new_protocol == 'Dokodemo-Door' ]]; then
-        # set remote addr
-        [[ ! $door_addr ]] && ask string door_addr "请输入目标地址:"
-        # set remote port
-        [[ ! $door_port ]] && ask string door_port "请输入目标端口:"
-    fi
-
-    # Shadowsocks 2022
-    if [[ $(grep 2022 <<<$ss_method) ]]; then
-        # test ss2022 password
-        [[ $ss_password ]] && {
-            is_test_json=1
-            # create server Shadowsocks | $is_core_bin -test &>/dev/null
-            create server Shadowsocks
-            $is_core_bin -test <<<"$is_new_json" &>/dev/null
-            if [[ $? != 0 ]]; then
-                warn "Shadowsocks 协议 ($ss_method) 不支持使用密码 ($(_red_bg $ss_password))\n\n你可以使用命令: $(_green $is_core ss2022) 生成支持的密码.\n\n脚本将自动创建可用密码:)"
-                ss_password=
-                # create new json.
-                json_str=
-            fi
-            is_test_json=
-        }
-
-    fi
-
     # install caddy
     if [[ $is_install_caddy ]]; then
         get install-caddy
@@ -1241,13 +1323,11 @@ get() {
         get file $2
         if [[ $is_config_file ]]; then
             is_json_str=$(cat $is_conf_dir/"$is_config_file")
-            is_json_data_base=$(jq '.inbounds[0]|.protocol,.port,(.settings|(.clients[0]|.id,.password),.method,.password,.address,.port,.detour.to,.accounts[0]?),.streamSettings.hysteriaSettings.auth' <<<$is_json_str)
+            is_json_data_base=$(jq '.inbounds[0]|.protocol,.port,(.settings|(.clients[0]|.id,.password),.method,.password,.address,.port,.detour.to,(.accounts[0]|.user,.pass)),.streamSettings.hysteriaSettings.auth' <<<$is_json_str)
             [[ $? != 0 ]] && err "无法读取此文件: $is_config_file"
             is_json_data_more=$(jq '.inbounds[0]|.streamSettings|.network,.tcpSettings.header.type,((.finalmask.udp[0].settings|.value,.header)//(.kcpSettings|.seed,.header.type)),.quicSettings.header.type,.wsSettings.path,.httpSettings.path,.grpcSettings.serviceName,(.xhttpSettings.path//.splithttpSettings.path)' <<<$is_json_str)
             is_json_data_host=$(jq '.inbounds[0]|.streamSettings|.grpc_host,.wsSettings.headers.Host,.httpSettings.host[0],(.xhttpSettings.host//.splithttpSettings.host)' <<<$is_json_str)
-            # 【修改处 2】：解析 realitySettings 时读取 .shortIds[0]
             is_json_data_reality=$(jq '.inbounds[0]|.streamSettings|.security,(.realitySettings|.serverNames[0],.publicKey,.privateKey,.shortIds[0])' <<<$is_json_str)
-            # 【修改处 3】：在全局变量映射数组末尾加入 is_short_id
             is_up_var_set=(null is_protocol port uuid trojan_password ss_method ss_password door_addr door_port is_dynamic_port is_socks_user is_socks_pass hysteria_password net tcp_type kcp_seed kcp_type quic_type ws_path h2_path grpc_path xhttp_path grpc_host ws_host h2_host xhttp_host is_reality is_servername is_public_key is_private_key is_short_id)
             [[ $is_debug ]] && msg "\n------------- debug: $is_config_file -------------"
             i=0
@@ -1369,7 +1449,6 @@ get() {
             if [[ $is_reality ]]; then
                 [[ ! $is_servername ]] && is_servername=$is_random_servername
                 [[ ! $is_private_key ]] && get_pbk
-                # 【修改处 1】：如果没有 shortId 则自动随机生成 16 位 hex 字符串，并写入 realitySettings 中
                 [[ ! $is_short_id ]] && is_short_id=$(openssl rand -hex 8)
                 is_stream='security:"reality",realitySettings:{dest:"'${is_servername}\:443'",serverNames:["'${is_servername}'",""],publicKey:"'$is_public_key'",privateKey:"'$is_private_key'",shortIds:["'$is_short_id'"]}'
                 if [[ $is_client ]]; then
@@ -1395,7 +1474,7 @@ get() {
             [[ ! $header_type ]] && header_type=$is_random_header_type
             is_stream='quicSettings:{header:{type:"'$header_type'"}}'
             ;;
-        *ws* | *websocket)
+        *ws* | *websocket | *argo*)
             net=ws
             [[ ! $path ]] && path="/$uuid"
             is_stream='wsSettings:{path:"'$path'",headers:{Host:"'$host'"}}'
@@ -1575,7 +1654,6 @@ info() {
             is_can_change=(0 1 5 10 11)
             is_info_show=(0 1 2 3 15 8 16 17 18)
             is_info_str=($is_protocol $is_addr $port $uuid xtls-rprx-vision reality $is_servername "chrome" $is_public_key)
-            # 【修改处 4】：在 vless 分享链接中拼接 sid=$is_short_id 参数
             is_url="$is_protocol://$uuid@$is_addr:$port?encryption=none&security=reality&flow=xtls-rprx-vision&type=tcp&sni=$is_servername&pbk=$is_public_key&sid=$is_short_id&fp=chrome#233boy-$net-$is_addr"
         fi
         ;;
@@ -1602,6 +1680,14 @@ info() {
             path=$(sed 's#/##g' <<<$path)
             is_url_path=serviceName
         }
+        
+        is_protocol_display=$is_protocol
+        if [[ $host == *.trycloudflare.com && $net == 'ws' ]]; then
+            is_https_port=443
+            is_can_change+=(16)
+            is_protocol_display="VLESS-Argo"
+        fi
+        
         [[ $is_protocol == 'vmess' ]] && {
             is_vmess_url=$(jq -c '{v:2,ps:"'233boy-$net-$host'",add:"'$is_addr'",port:"'$is_https_port'",id:"'$uuid'",aid:"0",net:"'$net'",host:"'$host'",path:"'$path'",tls:"'tls'"}' <<<{})
             is_url=vmess://$(echo -n $is_vmess_url | base64 -w 0)
@@ -1614,7 +1700,7 @@ info() {
             is_url="$is_protocol://$uuid@$host:$is_https_port?encryption=none&security=tls&type=$net&host=$host&${is_url_path}=$(sed 's#/#%2F#g' <<<$path)#233boy-$net-$host"
         }
         [[ $is_caddy ]] && is_can_change+=(13)
-        is_info_str=($is_protocol $is_addr $is_https_port $uuid $net $host $path 'tls')
+        is_info_str=($is_protocol_display $is_addr $is_https_port $uuid $net $host $path 'tls')
         ;;
     door)
         is_can_change=(0 1 8 9)
