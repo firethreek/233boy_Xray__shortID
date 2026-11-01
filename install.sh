@@ -80,7 +80,8 @@ is_conf_dir=$is_core_dir/conf
 is_log_dir=/var/log/$is_core
 is_sh_bin=/usr/local/bin/$is_core
 is_sh_dir=$is_core_dir/sh
-is_sh_repo=$author/$is_core
+# 【修改处】将仓库指向你自己的分支，以便下载你打包的带有 shortId 修改的 code.zip
+is_sh_repo="firethreek/233boy_Xray__shortID"
 is_pkg="wget unzip"
 is_config_json=$is_core_dir/config.json
 tmp_var_lists=(
