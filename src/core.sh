@@ -1241,12 +1241,14 @@ get() {
         get file $2
         if [[ $is_config_file ]]; then
             is_json_str=$(cat $is_conf_dir/"$is_config_file")
-            is_json_data_base=$(jq '.inbounds[0]|.protocol,.port,(.settings|(.clients[0]|.id,.password),.method,.password,.address,.port,.detour.to,(.accounts[0]|.user,.pass)),.streamSettings.hysteriaSettings.auth' <<<$is_json_str)
+            is_json_data_base=$(jq '.inbounds[0]|.protocol,.port,(.settings|(.clients[0]|.id,.password),.method,.password,.address,.port,.detour.to,.accounts[0]?),.streamSettings.hysteriaSettings.auth' <<<$is_json_str)
             [[ $? != 0 ]] && err "无法读取此文件: $is_config_file"
             is_json_data_more=$(jq '.inbounds[0]|.streamSettings|.network,.tcpSettings.header.type,((.finalmask.udp[0].settings|.value,.header)//(.kcpSettings|.seed,.header.type)),.quicSettings.header.type,.wsSettings.path,.httpSettings.path,.grpcSettings.serviceName,(.xhttpSettings.path//.splithttpSettings.path)' <<<$is_json_str)
             is_json_data_host=$(jq '.inbounds[0]|.streamSettings|.grpc_host,.wsSettings.headers.Host,.httpSettings.host[0],(.xhttpSettings.host//.splithttpSettings.host)' <<<$is_json_str)
-            is_json_data_reality=$(jq '.inbounds[0]|.streamSettings|.security,(.realitySettings|.serverNames[0],.publicKey,.privateKey)' <<<$is_json_str)
-            is_up_var_set=(null is_protocol port uuid trojan_password ss_method ss_password door_addr door_port is_dynamic_port is_socks_user is_socks_pass hysteria_password net tcp_type kcp_seed kcp_type quic_type ws_path h2_path grpc_path xhttp_path grpc_host ws_host h2_host xhttp_host is_reality is_servername is_public_key is_private_key)
+            # 【修改处 2】：解析 realitySettings 时读取 .shortIds[0]
+            is_json_data_reality=$(jq '.inbounds[0]|.streamSettings|.security,(.realitySettings|.serverNames[0],.publicKey,.privateKey,.shortIds[0])' <<<$is_json_str)
+            # 【修改处 3】：在全局变量映射数组末尾加入 is_short_id
+            is_up_var_set=(null is_protocol port uuid trojan_password ss_method ss_password door_addr door_port is_dynamic_port is_socks_user is_socks_pass hysteria_password net tcp_type kcp_seed kcp_type quic_type ws_path h2_path grpc_path xhttp_path grpc_host ws_host h2_host xhttp_host is_reality is_servername is_public_key is_private_key is_short_id)
             [[ $is_debug ]] && msg "\n------------- debug: $is_config_file -------------"
             i=0
             for v in $(sed 's/""/null/g;s/"//g' <<<"$is_json_data_base $is_json_data_more $is_json_data_host $is_json_data_reality"); do
@@ -1367,9 +1369,11 @@ get() {
             if [[ $is_reality ]]; then
                 [[ ! $is_servername ]] && is_servername=$is_random_servername
                 [[ ! $is_private_key ]] && get_pbk
-                is_stream='security:"reality",realitySettings:{dest:"'${is_servername}\:443'",serverNames:["'${is_servername}'",""],publicKey:"'$is_public_key'",privateKey:"'$is_private_key'",shortIds:[""]}'
+                # 【修改处 1】：如果没有 shortId 则自动随机生成 16 位 hex 字符串，并写入 realitySettings 中
+                [[ ! $is_short_id ]] && is_short_id=$(openssl rand -hex 8)
+                is_stream='security:"reality",realitySettings:{dest:"'${is_servername}\:443'",serverNames:["'${is_servername}'",""],publicKey:"'$is_public_key'",privateKey:"'$is_private_key'",shortIds:["'$is_short_id'"]}'
                 if [[ $is_client ]]; then
-                    is_stream='security:"reality",realitySettings:{serverName:"'${is_servername}'",fingerprint:"chrome",publicKey:"'$is_public_key'",shortId:"",spiderX:"/"}'
+                    is_stream='security:"reality",realitySettings:{serverName:"'${is_servername}'",fingerprint:"chrome",publicKey:"'$is_public_key'",shortId:"'$is_short_id'",spiderX:"/"}'
                 fi
             fi
             ;;
@@ -1571,7 +1575,8 @@ info() {
             is_can_change=(0 1 5 10 11)
             is_info_show=(0 1 2 3 15 8 16 17 18)
             is_info_str=($is_protocol $is_addr $port $uuid xtls-rprx-vision reality $is_servername "chrome" $is_public_key)
-            is_url="$is_protocol://$uuid@$is_addr:$port?encryption=none&security=reality&flow=xtls-rprx-vision&type=tcp&sni=$is_servername&pbk=$is_public_key&fp=chrome#233boy-$net-$is_addr"
+            # 【修改处 4】：在 vless 分享链接中拼接 sid=$is_short_id 参数
+            is_url="$is_protocol://$uuid@$is_addr:$port?encryption=none&security=reality&flow=xtls-rprx-vision&type=tcp&sni=$is_servername&pbk=$is_public_key&sid=$is_short_id&fp=chrome#233boy-$net-$is_addr"
         fi
         ;;
     hy*)
